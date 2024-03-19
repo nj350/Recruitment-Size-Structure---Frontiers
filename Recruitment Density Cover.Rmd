@@ -1,0 +1,1368 @@
+---
+title: "Recruitment Density Cover"
+author: "Nick Jones"
+date: "2024-02-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(cli)
+library(tidyverse)
+library(reshape2)
+library(ggplot2)
+library(plotrix)
+library(glmmTMB)
+library(emmeans)
+library(MASS)
+library(DHARMa)
+library(performance)
+library(moments)
+library(cowplot)
+```
+
+# Clean and Manipulate Data
+
+### Import Data and classify
+
+```{r}
+recruits <- read.csv("C:\\Users\\nj350\\OneDrive - Nova Southeastern University\\Documents\\PhD\\Chapter 4 - Recruitment and structure\\Data\\All Juveniles.csv")
+colonies <- read.csv("C:\\Users\\nj350\\OneDrive - Nova Southeastern University\\Documents\\PhD\\Chapter 4 - Recruitment and structure\\Data\\All Colonies.csv")
+cover <- read.csv("C:\\Users\\nj350\\OneDrive - Nova Southeastern University\\Documents\\PhD\\Chapter 4 - Recruitment and structure\\Data\\All Live Tissue.csv")
+info <- read.csv("C:\\Users\\nj350\\OneDrive - Nova Southeastern University\\Documents\\PhD\\Chapter 4 - Recruitment and structure\\Data\\Site Info.csv")
+
+recruits$Site <- as.factor(recruits$Site)
+recruits$Species <- as.factor(recruits$Species)
+str(recruits)
+
+recruits$Size.Class <- as.factor("<2")
+
+colonies$Site <- as.factor(colonies$Site)
+colonies$Species <- as.factor(colonies$Species)
+str(cover)
+
+cover$Site <- as.factor(cover$Site)
+cover$Species <- as.factor(cover$Species)
+str(cover)
+
+info$Site <- as.factor(info$Site)
+info$Habitat <- as.factor(info$Habitat)
+info$Habitat2 <- as.factor(info$Habitat2)
+info$Sub.region <- as.factor(info$Sub.region)
+
+```
+
+### Calculate LTA per site and species, then join datasets
+
+```{r}
+
+#calculate LTA by year site and species
+lta <- group_by(cover, Survey.Year, Year, Site, Species) %>% summarise(Cover = ((sum(Live.Cover))/300000)*100)
+
+#join data with site info
+rec.site <- left_join(info, recruits)
+colonies.site <- left_join(info, colonies)
+lta.site <- left_join(info, lta)
+
+#omit FTL6
+lta.site <- subset(lta.site, Site != "FTL6")
+lta.site$Site <- as.factor(lta.site$Site)
+lta.site$Site <- droplevels(lta.site$Site)
+rec.site <- subset(rec.site, Site != "FTL6")
+rec.site$Site <- droplevels(rec.site$Site)
+
+rec.site$Size.Class <- as.factor("<2")
+rec.site$Survey.Year <- as.factor(rec.site$Survey.Year)
+rec.site$Year <- as.factor(rec.site$Year)
+
+colonies.site <- subset(colonies.site, Site != "FTL6")
+colonies.site$Site <- droplevels(colonies.site$Site)
+
+rec.site %>%
+  group_by(Survey.Year) %>%
+  summarise(sum(Abundance))
+
+colonies.site %>%
+  group_by(Survey.Year) %>%
+  count()
+
+#we sampled 5408 colonies from 27 sites over 3 years (1845 in year 1, 1814 in year 2, 1749 in year 3)
+#we sampled 2177 recruits (<2) (731 in year 1, 938 in year 2, 508 in year 3)) 
+```
+
+### Calculate number of colonies per species, per site in each year
+
+```{r}
+
+n.species <- group_by(colonies.site, Survey.Year, Year, Site, Species) %>% count()
+n.species$Density <- n.species$n/30 #calculate density
+n.species.site <- left_join(info, n.species)
+n.species.site <- subset(n.species.site, Site != "FTL6")
+n.species.site$Site <- droplevels(n.species.site$Site)
+
+#number of colonies per site in each year
+n.colonies <- group_by(colonies.site, Survey.Year, Year, Site, Habitat2, Sub.region) %>% count()
+n.colonies <- n.colonies %>% ungroup() %>% mutate(Density = n/30)
+n.colonies.d <- group_by(n.colonies, Site) %>% summarise(D = mean(Density), SE.d = std.error(Density))
+
+#count recruit abundance and density per site per year                                                   
+rec.count <- group_by(rec.site, Survey.Year, Year, Site, Habitat2, Sub.region) %>% summarise(Abundance = sum(Abundance), Density = sum(Density))
+
+#recruits per site
+rec.count.site <- group_by(rec.site, Site) %>% summarise(Abundance = mean(Abundance), Density = mean(Density))
+
+group_by(rec.site, Species) %>% summarise(sum(Abundance))
+recruit.habs <- group_by(rec.site, Species, Habitat2) %>% summarise(sum(Abundance))
+
+rec.site$Habitat2 <- factor(rec.site$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+rec.site$Sub.region <- factor(rec.site$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+
+lta.site$Habitat2 <- factor(lta.site$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+lta.site$Sub.region <- factor(lta.site$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+
+#LTA per site per year
+lta.sum <- lta.site %>% group_by(Site, Year, Survey.Year, Habitat2, Sub.region) %>% summarise(Cover = sum(Cover))
+
+rec.count$Survey.Year <- as.factor(rec.count$Survey.Year)
+rec.count$Year <- as.factor(rec.count$Year)
+n.colonies$Survey.Year <- as.factor(n.colonies$Survey.Year)
+n.colonies$Year <- as.factor(n.colonies$Year)
+
+n.colonies$Habitat2 <- factor(n.colonies$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+n.colonies$Sub.region <- factor(n.colonies$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+
+rec.count$Habitat2 <- factor(rec.count$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+rec.count$Sub.region <- factor(rec.count$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+
+```
+
+# Data Exploration and summaries
+
+### Join Recruit and adult density and plot
+
+```{r}
+
+all.colony.density <- left_join(rec.count, n.colonies, by = c("Survey.Year", "Year", "Site", "Habitat2", "Sub.region"))
+
+all.colony.density$Site <- factor(all.colony.density$Site,
+                                  levels = c("POMP5",
+                                             "POMP4",
+                                             "POMP1",
+                                             "FTL1",
+                                             "FTL5",
+                                             "FTL4",
+                                             "JUL_7",
+                                             "JUL_6",
+                                             "HH2",
+                                             "DB2",
+                                             "HB2", 
+                                             "POMP6",
+                                             "POMP2",
+                                             "FTL2",
+                                             "JUL_1",
+                                             "DB3",
+                                             "HB3",
+                                             "POMP3",
+                                             "FTL3",
+                                             "JUL_8",
+                                             "JUL_2",
+                                             "Deerfield",
+                                             "Hillsboro",
+                                             "Pompano",
+                                             "FTL Deep",
+                                             "JUL Deep",
+                                             "Hollywood"))
+
+ggplot(all.colony.density, aes(x = Year, y = (Abundance+n)))+
+  geom_point()+
+ # geom_rug()+
+  facet_wrap(~Site, scales = "free", nrow = 4)+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 12, colour = "black"),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(12,6),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+```
+
+### Convert data to wide format for multivariate analysis
+
+```{r}
+
+rec.wide <- pivot_wider(rec.site, id_cols = c(Site, Survey.Year, Year, Sub.region, Habitat2), names_from = Species, values_from = Density, 
+                        values_fill = 0)
+
+colony.wide <- pivot_wider(n.species.site, id_cols = c(Site, Survey.Year, Year, Sub.region, Habitat2), names_from = Species, values_from = n, 
+                        values_fill = 0)
+
+```
+
+### Calculate change in colony abundance, cover per year
+```{r}
+
+Absolute_Change <- n.colonies %>% arrange(Site, Survey.Year) %>% group_by(Site, Habitat2) %>%  
+  mutate(Change = (n - lag(n))) #does not include recruits!
+
+Absolute_Change$Survey.Year <- as.factor(Absolute_Change$Survey.Year)
+
+Change.cover <- lta.sum %>% arrange(Site, Survey.Year) %>% group_by(Site, Habitat2) %>%  
+  mutate(Change = (Cover - lag(Cover)))
+
+ggplot(Absolute_Change, aes(x = Habitat2, y = Change))+
+  geom_boxplot(position = "dodge")+
+  facet_wrap(~Survey.Year)
+
+ggplot(Change.cover, aes(x = Habitat2, y = Change))+
+  geom_boxplot(position = "dodge")+
+  facet_wrap(~Survey.Year)
+
+```
+
+### Change in colony abundance plots
+
+####Calculate change in adult abundance, recruit abundance and adult abundance after addition of recruits
+
+```{r, warning=FALSE}
+
+Relative_Change <- all.colony.density %>% arrange(Site, Survey.Year) %>% group_by(Site, Habitat2) %>%  
+  mutate(Adult.rel.change = (((n - lag(n))/lag(n))*100),
+         Adult.abs.change = (n-lag(n)),
+         Rec.change = (((Abundance - lag(Abundance))/lag(Abundance))*100), 
+         n.change = (((n - lag(n+Abundance))/lag(n+Abundance))*100)) 
+
+Mean.Length.change <- group_by(colonies.site, Survey.Year, Year, Site, Habitat2, Sub.region, Latitude, Longitude, Depth, Distance.to.shoreline) %>% 
+  summarise(Length = mean(Colony.Length))
+
+Mean.Length.change$Survey.Year <- as.factor(Mean.Length.change$Survey.Year)
+Mean.Length.change$Year <- as.factor(Mean.Length.change$Year)
+
+Relative_Change <- left_join(Relative_Change, Mean.Length.change, by = c("Site", "Year", "Survey.Year", "Habitat2", "Sub.region")) %>%
+  dplyr::select(c("Site", "Year", "Survey.Year", "Habitat2", "Sub.region", "n", "Length", "Abundance","Adult.abs.change", "Adult.rel.change"))
+
+mean(Relative_Change$Length) #8.58
+mean(Relative_Change$Abundance) #mean recruits abundance 26.9 per year
+
+large.colony <- subset(Relative_Change, Length > 8.58)
+mean(large.colony$Abundance) #10.7
+(std.error(large.colony$Abundance))/30
+
+small.colony <- subset(Relative_Change, Length < 8.58)
+mean(small.colony$Abundance) #34.9
+(std.error(small.colony$Abundance))/30
+
+
+
+Relative_Change$Site <- factor(Relative_Change$Site,
+                                  levels = c("POMP4",
+                                             "HH2",
+                                             "POMP5",
+                                             "JUL_7",
+                                             "POMP1",
+                                             "FTL1",
+                                              "JUL_6",
+                                             "FTL4",
+                                             "FTL5",
+                                             "JUL_1",
+                                             "DB2",
+                                             "FTL2",
+                                             "HB2", 
+                                             "POMP6",
+                                             "POMP2",
+                                             "FTL3",
+                                              "JUL_8",
+                                             "JUL_2",
+                                             "DB3",
+                                             "HB3",
+                                             "POMP3",
+                                             "Deerfield",
+                                             "Hollywood",
+                                             "Hillsboro",
+                                             "JUL Deep",
+                                             "Pompano",
+                                             "FTL Deep"))
+
+Relative_Change2 <- subset(Relative_Change, Site != "HH2"&
+                             Site != "POMP4")
+
+pomp4_hh2 <- ggplot(subset(Relative_Change, Site == "HH2" | Site == "POMP4"))+
+  geom_point(aes(x = Survey.Year, y = Adult.abs.change), size = 2, colour = "gray")+
+    geom_point(aes(x = Survey.Year, y = Adult.abs.change), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  geom_point(aes(x = Survey.Year, y = Abundance/2), shape = "triangle", size = 2)+
+#  geom_point(aes(x = Survey.Year, y = n*2), shape = "square", size = 2)+ #option to add adult density
+  geom_hline(yintercept = 0, linetype = 3, size = 1) + 
+  geom_text(aes(x = Survey.Year, y = -55, label = paste(round(Length,1), "cm")), size = 2)+
+  labs(y = bquote('Change in Adult colony abundance')) +
+  scale_y_continuous(limits = c(-55,200), sec.axis = sec_axis(~.*2, name = "Recruit Abundance"))+
+ # geom_rug()+
+  facet_wrap(~Site, nrow = 1)+
+  theme(legend.position = "none", 
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10, hjust = 1, colour = "black"),  
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(0,0),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+inner.sites <- ggplot(subset(Relative_Change2, Habitat2 == "Inner"))+
+  geom_point(aes(x = Survey.Year, y = Adult.abs.change), size = 2, colour = "gray")+
+    geom_point(aes(x = Survey.Year, y = Adult.abs.change), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  geom_point(aes(x = Survey.Year, y = Abundance/2), shape = "triangle", size = 2)+
+#  geom_point(aes(x = Survey.Year, y = n*2), shape = "square", size = 2)+ #option to add adult density
+  geom_hline(yintercept = 0, linetype = 3, size = 1) + 
+    geom_text(aes(x = Survey.Year, y = -22, label = paste(round(Length,1), "cm")), size = 2)+
+  labs(y = bquote('Change in Adult colony abundance')) +
+  scale_y_continuous(limits = c(-25,40), sec.axis = sec_axis(~.*2, name = "Recruit Abundance"))+
+ # geom_rug()+
+  facet_wrap(~Site, nrow = 1)+
+  theme(legend.position = "none", 
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10, hjust = 1, colour = "black"),  
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(0,0),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+mid.sites <- ggplot(subset(Relative_Change, Habitat2 == "Middle"))+
+   geom_point(aes(x = Survey.Year, y = Adult.abs.change), size = 2, colour = "gray")+
+    geom_point(aes(x = Survey.Year, y = Adult.abs.change), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  geom_point(aes(x = Survey.Year, y = Abundance/2), shape = "triangle", size = 2)+
+#  geom_point(aes(x = Survey.Year, y = n*2), shape = "square", size = 2)+ #option to add adult density
+  geom_hline(yintercept = 0, linetype = 3, size = 1) + 
+    geom_text(aes(x = Survey.Year, y = -22, label = paste(round(Length,1), "cm")), size = 2)+
+  labs(y = bquote('Change in Adult colony abundance')) +
+  scale_y_continuous(limits = c(-25,40), sec.axis = sec_axis(~.*2, name = "Recruit Abundance"))+
+ # geom_rug()+
+  facet_wrap(~Site, nrow = 1)+
+  theme(legend.position = "none", 
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10, hjust = 1, colour = "black"),  
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(0,0),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+outer.sites <- ggplot(subset(Relative_Change, Habitat2 == "Outer"))+
+  geom_point(aes(x = Survey.Year, y = Adult.abs.change), size = 2, colour = "gray")+
+    geom_point(aes(x = Survey.Year, y = Adult.abs.change), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  geom_point(aes(x = Survey.Year, y = Abundance/2), shape = "triangle", size = 2)+
+#  geom_point(aes(x = Survey.Year, y = n*2), shape = "square", size = 2)+ #option to add adult density
+  geom_hline(yintercept = 0, linetype = 3, size = 1) +
+    geom_text(aes(x = Survey.Year, y = -22, label = paste(round(Length,1), "cm")), size = 2)+
+  labs(y = bquote('Change in Adult colony abundance')) +
+  scale_y_continuous(limits = c(-25,40), sec.axis = sec_axis(~.*2, name = "Recruit Abundance"))+
+ # geom_rug()+
+  facet_wrap(~Site, nrow = 1)+
+  theme(legend.position = "none", 
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10, hjust = 1, colour = "black"),  
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(0,0),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+deep.sites <- ggplot(subset(Relative_Change, Habitat2 == "Deep"))+
+  geom_point(aes(x = Survey.Year, y = Adult.abs.change), size = 2, colour = "gray")+
+    geom_point(aes(x = Survey.Year, y = Adult.abs.change), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  geom_point(aes(x = Survey.Year, y = Abundance/2), shape = "triangle", size = 2)+
+#  geom_point(aes(x = Survey.Year, y = n*2), shape = "square", size = 2)+ #option to add adult density
+  geom_hline(yintercept = 0, linetype = 3, size = 1) + 
+    geom_text(aes(x = Survey.Year, y = -22, label = paste(round(Length,1), "cm")), size = 2)+
+  labs(y = bquote('Change in Adult colony abundance')) +
+  scale_y_continuous(limits = c(-25,40), sec.axis = sec_axis(~.*2, name = "Recruit Abundance"))+
+ # geom_rug()+
+  facet_wrap(~Site, nrow = 1)+
+  theme(legend.position = "none", 
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10, hjust = 1, colour = "black"),  
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(0,0),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+rec.plot <- ggdraw()+
+draw_plot(pomp4_hh2, 0.01, 0.8, 0.38,0.2) + #positions plot, x location, y location, plot width, plot height
+  draw_plot(inner.sites, 0.01, 0.6, 0.99,0.2) +
+                         draw_plot(mid.sites, 0.01, 0.4, 0.99,0.2)+
+                         draw_plot(outer.sites, 0.01, 0.2, 0.99,0.2)+
+                         draw_plot(deep.sites, 0.01, 0, 0.99,0.2)+
+  draw_plot_label(c("a", "b", "c", "d", "e"), c(0,0,0,0,0), c(1, 0.8, 0.6, 0.4, 0.2)) #adds labels to plot, first vector specifies x position, second specifies y position
+
+rec.plot
+#gridExtra::grid.arrange(pomp4_hh2+ labs(tag = "a"),
+#  inner.sites + labs(tag = "b"),
+#                          mid.sites +labs(tag = "c"),
+#                          outer.sites +labs(tag = "d"),
+#                          deep.sites+labs(tag = "e"), ncol = 1)
+
+#ggsave2(rec.plot, file = "Recruit change plot.png", width = 9, height = 6, dpi = 300, units = "in")
+
+```
+### Plot Recruitment abundance vs change in adult abundance (each site/year a point) and then plot recruit abundance vs mean adult size
+
+```{r}
+plot.1 <- ggplot(Relative_Change)+
+  geom_point(aes(x = lag(Abundance), y = Adult.abs.change), size = 2, colour = "gray")+
+    geom_point(aes(x = lag(Abundance), y = Adult.abs.change), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  geom_hline(yintercept = 0, linetype = 3, size = 1) + 
+  labs(y = bquote('Change in Adult colony abundance'), x = "Recruit Abundance") +
+scale_y_continuous(limits = c(-35,35))+
+ geom_rug(aes(x = lag(Abundance), y = Adult.abs.change, colour = Habitat2))+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 10, hjust = 1, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(0,0),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+plot.2 <- ggplot(Relative_Change)+
+  geom_point(aes(x = Abundance, y = Length), size = 2, colour = "gray")+
+    geom_point(aes(x = Abundance, y = Length), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  labs(y = bquote('Mean Adult Colony Diameter (cm)'), x = "Recruit Abundance") +
+#  scale_y_continuous(limits = c(-25,40), sec.axis = sec_axis(~.*2, name = "Recruit Abundance"))+
+ geom_rug(aes(x = lag(Abundance), y = Length, colour = Habitat2))+
+  theme(legend.position = c(0.85,0.8),
+        legend.title = element_blank(),
+        axis.title.y = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 10, hjust = 1, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(0,0),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+
+fig.4 <- gridExtra::grid.arrange(plot.1 + labs(tag = "a"),
+                        plot.2 + labs(tag = "b"), ncol = 2)
+
+fig.4
+#ggsave(fig.4, file = "Figure 4. Recruit abundance colony change.png", width = 7, height = 4, dpi = 300)
+
+gam <- mgcv::gamm(Abundance~s(Length), 
+                    family = Gamma(log), random = list(Site = ~1),data = Relative_Change)
+
+e3 <- resid(gam$lme, type = "normalized")
+f3 <- fitted(gam$lme)
+plot(f3, e3)
+
+summary(gam$gam) #length vs abundance sig different to zero and trend is declining size with recruit abundance
+anova(gam$gam)
+plot(gam$gam)
+```
+
+
+
+### Relative change
+```{r}
+ggplot(Relative_Change)+
+  geom_point(aes(x = Survey.Year, y = Adult.rel.change), size = 2, colour = "gray")+
+    geom_point(aes(x = Survey.Year, y = Adult.rel.change), shape= 1, size = 2, colour = "black")+ #adds black border to points
+  geom_point(aes(x = Survey.Year, y = Abundance), shape = "triangle", size = 2)+
+#  geom_point(aes(x = Survey.Year, y = n*2), shape = "square", size = 2)+ #option to add adult density
+  geom_hline(yintercept = 0, linetype = 3, size = 1) + 
+  labs(y = bquote('Relative Change in Adult colony abundance (%)')) +
+  scale_y_continuous(limits = c(-50,100), sec.axis = sec_axis(~.*1, name = "Recruit Abundance"))+
+ # geom_rug()+
+  facet_wrap(~Site)+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 12, colour = "black"),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(12,6),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+```
+
+# Model Recruitment, cover and density
+
+## Recruit Abundance GLMM
+
+```{r}
+
+rec_site <- group_by(recruits, Survey.Year, Year, Site, Area) %>% summarise(Density = sum(Density), Abundance = sum(Abundance), .groups = "drop")
+names(rec_site)
+recruit.glm.data <- left_join(rec_site, info, by = "Site") %>% dplyr::select(Site, Survey.Year, Habitat2, Sub.region, Latitude, Longitude, Area, Density, Abundance) 
+
+recruit.glm.data <- subset(recruit.glm.data, Site != "FTL6")
+
+recruit.glm.data$Survey.Year <- as.factor(recruit.glm.data$Survey.Year)
+#check for overdispersion in base model
+
+rec.glm.p <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'poisson', data = recruit.glm.data) 
+rec.glm.nb1 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom1', data = recruit.glm.data) 
+rec.glm.nb2 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+AIC(rec.glm.p, rec.glm.nb1, rec.glm.nb2)#nbinom2 best, check summary
+
+summary(rec.glm.nb2)#looks sensible
+
+simulationOutput <- simulateResiduals(rec.glm.nb2, n = 1000)
+plot(simulationOutput) #looks good
+
+```
+### Model Selection
+
+```{r}
+
+#overdispersed data therefore negative binomial GLM 
+
+rec.glm1 <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm2 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm3 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm4 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm5 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm6 <- glmmTMB(Abundance ~ Survey.Year * Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm7 <- glmmTMB(Abundance ~ Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm8 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm9 <- glmmTMB(Abundance ~ Survey.Year + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm10 <- glmmTMB(Abundance ~ Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm11 <- glmmTMB(Abundance ~ Survey.Year +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm12 <- glmmTMB(Abundance ~ Habitat2 +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+rec.glm13 <- glmmTMB(Abundance ~ Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+AIC(rec.glm1, rec.glm2, rec.glm3, rec.glm4, rec.glm5, rec.glm6, rec.glm7, rec.glm8,rec.glm9, rec.glm10, rec.glm11, rec.glm12, rec.glm13)
+
+summary(rec.glm1)#model gives the same results but residuals actually look better wit just GLM and is perfectly reasonable
+#consistenly higher recruitment on inner reef, sig lower recruitment year 3, sig dif recruitment in Miami year 3
+
+```
+
+### Model Validation
+
+```{r}
+################
+
+rec.glm.all <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+
+simulationOutput <- simulateResiduals(rec.glm.all, n = 1000)
+plot(simulationOutput) #looks good
+
+res <- recalculateResiduals(simulationOutput, group = recruit.glm.data$Survey.Year)
+testTemporalAutocorrelation(simulationOutput = res, time = unique(recruit.glm.data$Survey.Year))
+#no temporal autocorrelation
+
+#tests for spatial autocorrelation - first step extracts lat and lon for each site, second recalculates residuals per site as you can't have repeated lat,lon, 3rd step performs the test
+groupLocations <- aggregate(recruit.glm.data[, 5:6], list(recruit.glm.data$Site), mean)
+res2 <- recalculateResiduals(simulationOutput, group = recruit.glm.data$Site)
+testSpatialAutocorrelation(res2, x =  groupLocations$Latitude, 
+                           y = groupLocations$Longitude)
+
+#can see some spatial autocorrelation but this is accounted for in the model
+
+```
+
+### Calculate R2 and post hoc tests
+
+```{r}
+rec.glm.all <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'nbinom2', data = recruit.glm.data) 
+
+r2(rec.glm.all) #conditional r2 = 0.881, marginal = 0.412
+
+emm.year.sub <- emmeans(rec.glm.all, ~ Survey.Year|Sub.region) 
+pairs(emm.year.sub) #sig higher recruitment in year broward in year 1 and 2 than year 3 (p<0.0001), marginally higher Deerfield year 2 than 3, no dif miami
+contrast(emm.year.sub, type = "response") #lower recruitment than mean year 3 broward (p<0.0001)
+plot(emm.year.sub, type = "response")
+
+emm.hab <- emmeans(rec.glm.all, ~ Habitat2) 
+pairs(emm.hab) #significantly higher recruitment on inner than deep sites (p = 0.009)
+contrast(emm.hab, type = "response") #lower than mean deep, higher than mean inner
+plot(emm.hab, type = "response") #twie as high as the mean
+
+#for completeness look at the factors individually
+emm.year <- emmeans(rec.glm.all, ~ Survey.Year) 
+pairs(emm.year) #sig higher years 1 and 2 than 3 (p<0.01)
+contrast(emm.year, type = "response") #lower recruitment in year 3 (p = 0.0002), higher year 1 (p=0.01)
+plot(emm.year, type = "response")
+
+emm.sub <- emmeans(rec.glm.all, ~ Sub.region) 
+pairs(emm.sub) #no sig dif
+contrast(emm.sub, type = "response") #no sig difs
+plot(emm.sub, type = "response")
+
+```
+##### End Recruit GLMM
+
+## MCAV recruits
+
+```{r}
+mcav.rec <- subset(recruits, Species == "MCAV") %>%  group_by(Survey.Year, Year, Site, Area) %>% summarise(Density = sum(Density), Abundance = sum(Abundance), .groups = "drop")
+
+mcav.rec.data <- left_join(mcav.rec, info, by = "Site") %>% dplyr::select(Site, Survey.Year, Habitat2, Sub.region, Latitude, Longitude, Area, Density, Abundance) 
+
+mcav.rec.data <- subset(mcav.rec.data, Site != "FTL6")
+mcav.rec.data$Habitat2 <- factor(mcav.rec.data$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+mcav.rec.data$Sub.region <- factor(mcav.rec.data$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+
+mcav.rec.data$Survey.Year <- as.factor(mcav.rec.data$Survey.Year)
+
+rec.glm.p <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'poisson', data = mcav.rec.data) 
+rec.glm.nb1 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom1', data = mcav.rec.data) 
+rec.glm.nb2 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom2', data = mcav.rec.data) 
+
+AIC(rec.glm.p, rec.glm.nb1, rec.glm.nb2)#poisson best, check summary
+
+summary(rec.glm.p)#poisson summary sensible
+
+simulationOutput <- simulateResiduals(rec.glm.p, n = 1000)
+plot(simulationOutput) #looks good for now but needs model selection
+
+```
+
+
+### Model Selection
+
+```{r}
+
+rec.glm1 <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm2 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm3 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+#too complex - had lowest AIC but doesn't converge
+rec.glm4 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm5 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm6 <- glmmTMB(Abundance ~ Survey.Year * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm7 <- glmmTMB(Abundance ~ Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+# 2nd lowest AIC - but random effect variance not well estimated so drop model
+
+rec.glm8 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm9 <- glmmTMB(Abundance ~ Survey.Year + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm10 <- glmmTMB(Abundance ~ Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm11 <- glmmTMB(Abundance ~ Survey.Year +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm12 <- glmmTMB(Abundance ~ Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+rec.glm13 <- glmmTMB(Abundance ~ Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+
+AIC(rec.glm1, rec.glm2, rec.glm3, rec.glm4, rec.glm5, rec.glm6, rec.glm7, rec.glm8,rec.glm9, rec.glm10, rec.glm11, rec.glm12, rec.glm13)
+
+summary(rec.glm9) #best mod that converges
+
+```
+
+### Model Validation
+
+```{r}
+################
+
+rec.glm.mcav <- glmmTMB(Abundance ~ Survey.Year + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = mcav.rec.data) 
+summary(rec.glm.mcav)
+
+simulationOutput <- simulateResiduals(rec.glm.mcav, n = 1000)
+plot(simulationOutput) #looks good
+
+res <- recalculateResiduals(simulationOutput, group = mcav.rec.data$Survey.Year)
+testTemporalAutocorrelation(simulationOutput = res, time = unique(mcav.rec.data$Survey.Year))
+#no temporal autocorrelation
+
+#tests for spatial autocorrelation - first step extracts lat and lon for each site, second recalculates residuals per site as you can't have repeated lat,lon, 3rd step performs the test
+groupLocations <- aggregate(mcav.rec.data[, 5:6], list(mcav.rec.data$Site), mean)
+res2 <- recalculateResiduals(simulationOutput, group = mcav.rec.data$Site)
+testSpatialAutocorrelation(res2, x =  groupLocations$Latitude, 
+                           y = groupLocations$Longitude)
+
+#can see some spatial autocorrelation but this is accounted for in the model
+
+```
+
+### Calculate R2 and post hoc tests
+
+```{r}
+
+r2(rec.glm.mcav) #conditional r2 = 0.101, marginal = 0.038
+#most of the variation at site level
+
+emm.year <- emmeans(rec.glm.mcav, ~ Survey.Year) 
+pairs(emm.year) #marginally higher years 1 than 3 (p=0.05)
+contrast(emm.year, type = "response") #sig higher than the mean in year 1 (p < 0.05)
+
+plot(emm.year, type = "response")
+
+emm.sub <- emmeans(rec.glm.mcav, ~ Sub.region) 
+pairs(emm.sub) #sig higher recruitment miami than broward (p<0.05)
+contrast(emm.sub, type = "response") #marginally higher than mean i miami (p = 0.06)
+
+plot(emm.sub, type = "response")
+
+```
+##### End MCAV Recruit GLMM - sig variation by year and sub-region - sig higher than the mean in year 1, sig higher miami than broward (p <0.05)
+##### Pulse recruitment like the SSIDs
+
+## PAST recruits
+
+```{r}
+past.rec <- subset(recruits, Species == "PAST") %>%  group_by(Survey.Year, Year, Site, Area) %>% summarise(Density = sum(Density), Abundance = sum(Abundance), .groups = "drop")
+
+past.rec.data <- left_join(past.rec, info, by = "Site") %>% dplyr::select(Site, Survey.Year, Habitat2, Sub.region, Latitude, Longitude, Area, Density, Abundance) 
+past.rec.data <- subset(past.rec.data, Site != "FTL6")
+past.rec.data$Habitat2 <- factor(past.rec.data$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+past.rec.data$Sub.region <- factor(past.rec.data$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+
+past.rec.data$Survey.Year <- as.factor(past.rec.data$Survey.Year)
+
+rec.glm.p <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'poisson', data = past.rec.data) 
+rec.glm.nb1 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom1', data = past.rec.data) 
+rec.glm.nb2 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom2', data = past.rec.data) 
+
+AIC(rec.glm.p, rec.glm.nb1, rec.glm.nb2)#poisson best, check summary
+
+summary(rec.glm.p)#poisson best, indicates no clear pattern though, check in model selection
+
+simulationOutput <- simulateResiduals(rec.glm.p, n = 1000)
+plot(simulationOutput) #looks good for now but needs model selection
+
+```
+
+### Model Selection
+
+```{r}
+
+rec.glm1 <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm2 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm3 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm4 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm5 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm6 <- glmmTMB(Abundance ~ Survey.Year * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm7 <- glmmTMB(Abundance ~ Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm8 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm9 <- glmmTMB(Abundance ~ Survey.Year + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm10 <- glmmTMB(Abundance ~ Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm11 <- glmmTMB(Abundance ~ Survey.Year +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm12 <- glmmTMB(Abundance ~ Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+rec.glm13 <- glmmTMB(Abundance ~ Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+AIC(rec.glm1, rec.glm2, rec.glm3, rec.glm4, rec.glm5, rec.glm6, rec.glm7, rec.glm8,rec.glm9, rec.glm10, rec.glm11, rec.glm12, rec.glm13)
+
+summary(rec.glm11) #best mod that converges
+
+```
+### Model Validation
+
+```{r}
+################
+
+rec.glm.past <- glmmTMB(Abundance ~ Survey.Year +offset(log(Area))+ (1|Site), family = 'poisson', data = past.rec.data) 
+
+simulationOutput <- simulateResiduals(rec.glm.past, n = 1000)
+plot(simulationOutput) #looks good
+
+res <- recalculateResiduals(simulationOutput, group = past.rec.data$Survey.Year)
+testTemporalAutocorrelation(simulationOutput = res, time = unique(past.rec.data$Survey.Year))
+#no temporal autocorrelation
+
+#tests for spatial autocorrelation - first step extracts lat and lon for each site, second recalculates residuals per site as you can't have repeated lat,lon, 3rd step performs the test
+groupLocations <- aggregate(past.rec.data[, 5:6], list(past.rec.data$Site), mean)
+res2 <- recalculateResiduals(simulationOutput, group = past.rec.data$Site)
+testSpatialAutocorrelation(res2, x =  groupLocations$Latitude, 
+                           y = groupLocations$Longitude)
+
+#can see some spatial autocorrelation but this is accounted for in the model
+
+```
+### Calculate R2 and post hoc tests
+
+```{r}
+
+r2(rec.glm.past) #conditional r2 = 0.28, marginal = 0.02
+#most of the variation at site level
+
+emm.year <- emmeans(rec.glm.past, ~ Survey.Year) 
+pairs(emm.year) #no difs
+contrast(emm.year, type = "response") #no difs
+```
+##### PAST recruit density doesn't vary significantly by anything, some evidence of site level variation but nothing different than random
+##### Brooder, consistant recruitment where there are colonies
+
+## SSID recruits
+
+```{r}
+ssid.rec <- subset(recruits, Species == "SSID") %>%  group_by(Survey.Year, Year, Site, Area) %>% summarise(Density = sum(Density), Abundance = sum(Abundance), .groups = "drop")
+
+ssid.rec.glm.data <- left_join(ssid.rec, info, by = "Site") %>% dplyr::select(Site, Survey.Year, Habitat2, Sub.region, Latitude, Longitude, Area, Density, Abundance) 
+ssid.rec.glm.data <- subset(ssid.rec.glm.data, Site != "FTL6")
+
+ssid.rec.glm.data$Survey.Year <- as.factor(ssid.rec.glm.data$Survey.Year)
+
+rec.glm.p <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'poisson', data = ssid.rec.glm.data) 
+rec.glm.nb1 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom1', data = ssid.rec.glm.data) 
+rec.glm.nb2 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+AIC(rec.glm.p, rec.glm.nb1, rec.glm.nb2)#nbinom2 best, check summary
+
+summary(rec.glm.nb2)#indicates no clear pattern though, check in model selection
+
+simulationOutput <- simulateResiduals(rec.glm.nb2, n = 1000)
+plot(simulationOutput) #looks good for now but needs model selection
+
+```
+
+### Model Selection
+
+```{r}
+
+rec.glm1 <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm2 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm3 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm4 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm5 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm6 <- glmmTMB(Abundance ~ Survey.Year * Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm7 <- glmmTMB(Abundance ~ Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm8 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm9 <- glmmTMB(Abundance ~ Survey.Year + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm10 <- glmmTMB(Abundance ~ Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm11 <- glmmTMB(Abundance ~ Survey.Year +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm12 <- glmmTMB(Abundance ~ Habitat2 +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+rec.glm13 <- glmmTMB(Abundance ~ Sub.region +offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+
+AIC(rec.glm1, rec.glm2, rec.glm3, rec.glm4, rec.glm5, rec.glm6, rec.glm7, rec.glm8,rec.glm9, rec.glm10, rec.glm11, rec.glm12, rec.glm13)
+
+summary(rec.glm1) #best mod that converges
+
+```
+
+### Model Validation
+
+```{r}
+################
+
+rec.glm.ssid <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'nbinom2', data = ssid.rec.glm.data) 
+summary(rec.glm.ssid) 
+
+simulationOutput <- simulateResiduals(rec.glm.ssid, n = 1000)
+plot(simulationOutput) #looks good
+
+res <- recalculateResiduals(simulationOutput, group = ssid.rec.glm.data$Survey.Year)
+testTemporalAutocorrelation(simulationOutput = res, time = unique(ssid.rec.glm.data$Survey.Year))
+#no temporal autocorrelation
+
+#tests for spatial autocorrelation - first step extracts lat and lon for each site, second recalculates residuals per site as you can't have repeated lat,lon, 3rd step performs the test
+groupLocations <- aggregate(ssid.rec.glm.data[, 5:6], list(ssid.rec.glm.data$Site), mean)
+res2 <- recalculateResiduals(simulationOutput, group = ssid.rec.glm.data$Site)
+testSpatialAutocorrelation(res2, x =  groupLocations$Latitude, 
+                           y = groupLocations$Longitude)
+
+#can see some spatial autocorrelation but this is accounted for in the model
+
+```
+
+### Calculate R2 and post hoc tests
+
+```{r}
+
+r2(rec.glm.ssid) #conditional r2 = 0.890, marginal = 0.497
+#explains a lot of variation
+
+emm.year.sub <- emmeans(rec.glm.ssid, ~ Survey.Year|Sub.region) 
+pairs(emm.year.sub) #sig higher broward 1 and 2 tan 3 (p<0.0001)
+contrast(emm.year.sub, type = "response") #no difs
+plot(emm.year.sub, type = "response")
+
+emm.hab <- emmeans(rec.glm.ssid, ~ Habitat2) 
+pairs(emm.hab) #sig high inner than deep (p=0.0007), sig higher inner than outer (p=0.04)
+contrast(emm.hab, type = "response") #sig highre than mean inner (p=0.001), sig lower than mean deep (p=0.01)
+plot(emm.hab, type = "response")
+
+#for completeness
+emm.year <- emmeans(rec.glm.ssid, ~ Survey.Year) 
+pairs(emm.year) #years 1 and 2 sig higher than 3 (p<0.01)
+contrast(emm.year, type = "response") #lower than mean in year 3 (p<0.001)
+plot(emm.year, type = "response")
+
+emm.sub <- emmeans(rec.glm.ssid, ~ Sub.region) 
+pairs(emm.sub) #no difs
+contrast(emm.sub, type = "response") #no difs
+plot(emm.sub, type = "response")
+
+```
+##### SSID recruits vary by year| and habitat - three times higher inner than the mean, half the mean deep. Sig higher in broward years 1 and 2 than 3 (pulse recruitment)
+
+## Non-target recruits
+
+```{r}
+non.target.rec <- subset(recruits, Species != "SSID" & Species != "MCAV" & Species != "PAST") %>%  group_by(Survey.Year, Year, Site, Area) %>% summarise(Density = sum(Density), Abundance = sum(Abundance), .groups = "drop")
+
+non.target.data <- left_join(non.target.rec, info, by = "Site") %>% dplyr::select(Site, Survey.Year, Habitat2, Sub.region, Latitude, Longitude, Area, Density, Abundance) 
+non.target.data <- subset(non.target.data, Site != "FTL6")
+
+non.target.data$Survey.Year <- as.factor(non.target.data$Survey.Year)
+
+rec.glm.p <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'poisson', data = non.target.data) 
+rec.glm.nb1 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom1', data = non.target.data) 
+rec.glm.nb2 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom2', data = non.target.data) 
+
+AIC(rec.glm.p, rec.glm.nb1, rec.glm.nb2)#poisson best, check summary
+
+summary(rec.glm.p)#looks sensible, check in model selection
+
+simulationOutput <- simulateResiduals(rec.glm.p, n = 1000)
+plot(simulationOutput) #looks good enough for now but needs model selection
+
+```
+
+### Model Selection
+
+```{r}
+
+rec.glm1 <- glmmTMB(Abundance ~ Survey.Year * Sub.region + Habitat2 + offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm2 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm3 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm4 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm5 <- glmmTMB(Abundance ~ Survey.Year * Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm6 <- glmmTMB(Abundance ~ Survey.Year * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm7 <- glmmTMB(Abundance ~ Habitat2 * Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm8 <- glmmTMB(Abundance ~ Survey.Year + Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm9 <- glmmTMB(Abundance ~ Survey.Year + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm10 <- glmmTMB(Abundance ~ Habitat2 + Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm11 <- glmmTMB(Abundance ~ Survey.Year +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm12 <- glmmTMB(Abundance ~ Habitat2 +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+rec.glm13 <- glmmTMB(Abundance ~ Sub.region +offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+
+AIC(rec.glm1, rec.glm2, rec.glm3, rec.glm4, rec.glm5, rec.glm6, rec.glm7, rec.glm8,rec.glm9, rec.glm10, rec.glm11, rec.glm12, rec.glm13)
+
+summary(rec.glm13) #best mod that converges
+
+```
+
+### Model Validation
+
+```{r}
+
+rec.glm.non <- glmmTMB(Abundance ~ Sub.region + offset(log(Area))+ (1|Site), family = 'poisson', data = non.target.data) 
+summary(rec.glm.non) 
+
+simulationOutput <- simulateResiduals(rec.glm.non, n = 1000)
+plot(simulationOutput) #looks good
+
+res <- recalculateResiduals(simulationOutput, group = non.target.data$Survey.Year)
+testTemporalAutocorrelation(simulationOutput = res, time = unique(non.target.data$Survey.Year))
+#no temporal autocorrelation
+
+#tests for spatial autocorrelation - first step extracts lat and lon for each site, second recalculates residuals per site as you can't have repeated lat,lon, 3rd step performs the test
+groupLocations <- aggregate(non.target.data[, 5:6], list(non.target.data$Site), mean)
+res2 <- recalculateResiduals(simulationOutput, group = non.target.data$Site)
+testSpatialAutocorrelation(res2, x =  groupLocations$Latitude, 
+                           y = groupLocations$Longitude)
+
+#can see some spatial autocorrelation but this is accounted for in the model
+
+```
+
+### Calculate R2 and post hoc tests
+
+```{r}
+
+r2(rec.glm.non) #conditional r2 = 0.298, marginal = 0.145
+
+emm.sub <- emmeans(rec.glm.non, ~ Sub.region) 
+pairs(emm.sub) #sig higher miami than deerfield (p=0.04)
+contrast(emm.sub, type = "response") #higher than the mean miami (p=0.03) - 50% higher than the mean
+plot(emm.sub, type = "response")
+
+```
+##### Non target recruits sig higher in miami than deerfield (latitudinal gradient)
+
+## Cover GLMM
+
+```{r}
+
+#calculate LTA by year site and species
+lta <- group_by(cover, Survey.Year, Year, Site, Species) %>% summarise(Cover = ((sum(Live.Cover))/300000)*100)
+
+#join data with site info
+lta.site <- left_join(info, lta)
+
+#omit FTL6
+lta.site <- subset(lta.site, Site != "FTL6")
+lta.site$Site <- as.factor(lta.site$Site)
+lta.site$Site <- droplevels(lta.site$Site)
+lta.site$Habitat2 <- factor(lta.site$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+lta.site$Sub.region <- factor(lta.site$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+lta.site$Site <- as.factor(lta.site$Site)
+lta.site$Survey.Year <- as.factor(lta.site$Survey.Year)
+
+#LTA per site per year
+lta.sum <- lta.site %>% group_by(Site, Year, Survey.Year, Habitat2, Sub.region, Latitude, Longitude) %>% summarise(Cover = sum(Cover))
+
+hist(lta.sum$Cover) #try gamma distributed models
+
+#model selection
+cover.glmm1 <- glmmTMB(Cover ~ Survey.Year + Habitat2 * Sub.region + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm2 <- glmmTMB(Cover ~ Survey.Year * Habitat2 + Sub.region + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm3 <- glmmTMB(Cover ~ Survey.Year + Habitat2 + Sub.region + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm4 <- glmmTMB(Cover ~ Survey.Year + Sub.region + Habitat2 + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm5 <- glmmTMB(Cover ~ Habitat2 + Sub.region + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm6 <- glmmTMB(Cover ~ Survey.Year+ Sub.region + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm7 <- glmmTMB(Cover ~ Survey.Year + Habitat2 + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm8 <- glmmTMB(Cover ~ Survey.Year + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm9 <- glmmTMB(Cover ~ Sub.region + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm10 <- glmmTMB(Cover ~ Habitat2 + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm11 <- glmmTMB(Cover ~ Survey.Year * Habitat2 + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm12 <- glmmTMB(Cover ~ Sub.region * Survey.Year + (1|Site), family = Gamma(log), data = lta.sum) 
+cover.glmm13 <- glmmTMB(Cover ~ Habitat2 * Sub.region +(1|Site), family = Gamma(log), data = lta.sum)
+
+AIC(cover.glmm1, cover.glmm2, cover.glmm3, cover.glmm4, cover.glmm5, cover.glmm6, cover.glmm7, cover.glmm8, cover.glmm9, cover.glmm10, cover.glmm11,
+    cover.glmm12, cover.glmm13)
+
+summary(cover.glmm10)
+
+```
+
+```{r}
+#habitat * Year best
+
+cover.glmm.final <- glmmTMB(Cover ~ Habitat2 + (1|Site), family = Gamma(log), data = lta.sum) 
+summary(cover.glmm.final)
+
+simulationOutput <- simulateResiduals(cover.glmm.final, n = 1000)
+plot(simulationOutput)
+
+res <- recalculateResiduals(simulationOutput, group = lta.sum$Survey.Year)
+testTemporalAutocorrelation(simulationOutput = res, time = unique(lta.sum$Survey.Year))
+#no sig temporal autocorrelation
+
+```
+
+### R2 and post hoc
+```{r}
+r2(cover.glmm.final) #condtional R2 = 0.962, marginal = 0.273
+
+emm.mod.cover <- emmeans(cover.glmm.final, ~ Habitat2) 
+
+pairs(emm.mod.cover) #cover significantly higher on deep than middle reef (p = 0.01) and marginally higher than on the inner reef (p = 0.08)
+contrast(emm.mod.cover, type = "response") #twice as high deep than the mean (p=0.01)
+emmip(emm.mod.cover, ~ Habitat2, "response")+
+  geom_jitter(aes(x = Habitat2, y = Cover, colour = Habitat2), data = lta.sum)
+
+```
+
+## Abundance GLM
+
+```{r}
+
+n.colonies$Habitat2 <- factor(n.colonies$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+n.colonies$Sub.region <- factor(n.colonies$Sub.region, levels = c("Deerfield", "Broward", "Miami"))
+n.colonies$Area <- 30
+
+n.colonies$Survey.Year <- as.factor(n.colonies$Survey.Year)
+
+n.glm.p <- glmmTMB(n ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'poisson', data = n.colonies) 
+n.glm.nb1 <- glmmTMB(n ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom1', data = n.colonies) 
+n.glm.nb2 <- glmmTMB(n ~ Survey.Year + Habitat2 + Sub.region +offset(log(Area)) + (1|Site), family = 'nbinom2', data = n.colonies) 
+
+AIC(n.glm.p, n.glm.nb1, n.glm.nb2)#poisson best, check summary
+
+summary(n.glm.p)#looks sensible, check in model selection
+
+simulationOutput <- simulateResiduals(n.glm.p, n = 1000)
+plot(simulationOutput) #looks good enough for now but needs model selection
+
+```
+
+### Model selection
+
+```{r}
+n.glmm1 <- glmmTMB(n ~ Survey.Year + Habitat2 * Sub.region + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm2 <- glmmTMB(n ~ Survey.Year * Habitat2 + Sub.region + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm3 <- glmmTMB(n ~ Survey.Year + Habitat2 + Sub.region + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm4 <- glmmTMB(n ~ Survey.Year + Sub.region + Habitat2 + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm5 <- glmmTMB(n ~ Habitat2 + Sub.region + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm6 <- glmmTMB(n ~ Survey.Year+ Sub.region + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm7 <- glmmTMB(n ~ Survey.Year + Habitat2 + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm8 <- glmmTMB(n ~ Survey.Year + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm9 <- glmmTMB(n ~ Sub.region + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm10 <- glmmTMB(n ~ Habitat2 + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm11 <- glmmTMB(n ~ Survey.Year * Habitat2 + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm12 <- glmmTMB(n ~ Sub.region * Survey.Year + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+n.glmm13 <- glmmTMB(n ~ Habitat2 * Sub.region +(1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies)
+n.glmm14 <- glmmTMB(n ~ (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies)
+
+AIC(n.glmm1, n.glmm2, n.glmm3, n.glmm4, n.glmm5, n.glmm6, n.glmm7, n.glmm8, n.glmm9, n.glmm10, n.glmm11,
+    n.glmm12, n.glmm13, n.glmm14)
+
+summary(n.glmm7)#has equivalent AIC to each independently and is the most complex suggesting it's best
+summary(n.glmm8)
+summary(n.glmm10)
+
+```
+### Model Validation
+```{r}
+
+n.glmm.final <- glmmTMB(n ~ Habitat2 + (1|Site)+offset(log(Area)), family = 'poisson', data = n.colonies) 
+summary(n.glmm.final)
+
+simulationOutput <- simulateResiduals(n.glmm.final, n = 1000)
+plot(simulationOutput) #quantiles don't calculate properly therefore model is not correctly specified. The models for habitat and survey year look better. 
+
+res <- recalculateResiduals(simulationOutput, group = n.colonies$Survey.Year)
+testTemporalAutocorrelation(simulationOutput = res, time = unique(n.colonies$Survey.Year))
+#no temporal autocorrelation
+
+```
+
+### R2 and post hoc
+```{r}
+r2(n.glmm.final) #condtional R2 = 0.901, marginal = 0.141
+#most of the variability is spatial
+
+emm.hab <- emmeans(n.glmm.final, ~ Habitat2) 
+
+pairs(emm.hab) #no sig difs, only thing close is inner < outer but only p = 0.25 so not much evidence - most is site level variation
+contrast(emm.hab, type = "response") #no sig difs
+emmip(emm.hab, ~ Habitat2, "response")+
+  geom_jitter(aes(x = Habitat2, y = n, colour = Habitat2), data = n.colonies)
+
+```
+
+# FIGURE 2
+
+```{r}
+cover.label <- c("ab", "b", "ab", "a")
+cover.position <- max(lta.sum$Cover) + 0.5
+
+cover.habitat2 <- ggplot(lta.sum, aes(x = Habitat2, y = Cover))+
+  geom_boxplot(position = "dodge")+
+  labs(y = bquote('Cover (%)'), x = "")+
+  theme_bw()+ 
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.1), axis.text.y = element_text(size = 12, hjust = 1, colour = "black"), axis.title.y = element_text(size = 14), 
+        axis.text.x = element_text(size = 14, colour = "black"), axis.title.x = element_blank(), axis.line = element_line(size = 0.5), axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black"), plot.margin = margin(12,6),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.text.y = element_blank())
+
+cover.habitat2 +
+  geom_text(label = c("ab"), aes(y = 7.8, x = c(1)))+
+  geom_text(label = c("b"), aes(y = 1.8, x = c(2)))+
+  geom_text(label = c("ab"), aes(y = 3, x = c(3)))+
+  geom_text(label = c("a"), aes(y = 6, x = c(4)))
+
+density.plot2 <- ggplot(n.colonies, aes(x = Habitat2, y = Density))+
+  geom_boxplot(position = "dodge")+
+  labs(y = bquote('Adult Density'~ ('Colonies'~ m^-2)), x = "")+
+  theme_bw()+ 
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.1), axis.text.y = element_text(size = 12, hjust = 1, colour = "black"), axis.title.y = element_text(size = 14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.line = element_line(size = 0.5), axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black"), plot.margin = margin(12,6),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.text.y = element_blank())
+
+recruit.plot2 <- ggplot(rec.count, aes(x = Habitat2, y = Density))+
+  geom_boxplot(position = "dodge")+
+  labs(y = bquote('Recruit Density'~ ('Colonies'~ m^-2)), x = "")+
+  theme_bw()+ 
+  scale_y_continuous(limits = c(0, 12), breaks = c(0, 3, 6, 9, 12))+
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.1), axis.text.y = element_text(size = 12, hjust = 1, colour = "black"), axis.title.y = element_text(size = 14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.line = element_line(size = 0.5), axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black"), plot.margin = margin(12,6),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.text.y = element_blank())
+
+gridExtra::grid.arrange(recruit.plot2 + labs(tag = "a") + 
+                          geom_text(label = c("a"), aes(y = 11.9, x = 1), size = 5)+
+                          geom_text(label = c("ab"), aes(y = 2, x = 2), size = 5)+
+                          geom_text(label = c("ab"), aes(y = 2, x = 3), size = 5)+
+                          geom_text(label = c("b"), aes(y = 1.6, x = 4), size = 5)+
+                          theme(text = element_text(size = 15, face = "bold")), 
+                        density.plot2 + labs(tag = "b")+ 
+                          geom_text(label = c("a"), aes(y = 4, x = 1), size = 5)+
+                          geom_text(label = c("a"), aes(y = 3, x = 2), size = 5)+
+                          geom_text(label = c("a"), aes(y = 5, x = 3), size = 5)+
+                          geom_text(label = c("a"), aes(y = 4, x = 4), size = 5)+
+                          theme(text = element_text(size = 15, face = "bold")), 
+                        cover.habitat2 +
+                          geom_text(label = c("ab"), aes(y = 7.9, x = 1), size = 5)+
+                          geom_text(label = c("b"), aes(y = 1.8, x = 2), size = 5)+
+                          geom_text(label = c("ab"), aes(y = 3, x = 3), size = 5)+
+                          geom_text(label = c("a"), aes(y = 6.1, x = 4))
+ + labs(tag = "c")+ theme(text = element_text(size = 15, face = "bold")))
+
+fig.2 <- gridExtra::grid.arrange(recruit.plot2 + labs(tag = "a") + 
+                          geom_text(label = c("a"), aes(y = 11.9, x = 1), size = 5)+
+                          geom_text(label = c("ab"), aes(y = 2, x = 2), size = 5)+
+                          geom_text(label = c("ab"), aes(y = 2, x = 3), size = 5)+
+                          geom_text(label = c("b"), aes(y = 1.6, x = 4), size = 5)+
+                          theme(text = element_text(size = 15, face = "bold")), 
+                        density.plot2 + labs(tag = "b")+ 
+                          geom_text(label = c("a"), aes(y = 4, x = 1), size = 5)+
+                          geom_text(label = c("a"), aes(y = 3, x = 2), size = 5)+
+                          geom_text(label = c("a"), aes(y = 5, x = 3), size = 5)+
+                          geom_text(label = c("a"), aes(y = 4, x = 4), size = 5)+
+                          theme(text = element_text(size = 15, face = "bold")), 
+                        cover.habitat2 +
+                          geom_text(label = c("ab"), aes(y = 7.9, x = 1), size = 5)+
+                          geom_text(label = c("b"), aes(y = 1.8, x = 2), size = 5)+
+                          geom_text(label = c("ab"), aes(y = 3, x = 3), size = 5)+
+                          geom_text(label = c("a"), aes(y = 6.1, x = 4), size = 5)
+ + labs(tag = "c")+ theme(text = element_text(size = 15, face = "bold")))
+
+ggsave(file = "Figure 2 - Density recruits and cover.png", fig.2, width = 9, height = 9, dpi = 300, units = "in")
+
+
+```
+
+# FIGURE S1
+
+```{r}
+year_lab <- c("1" = "Year 1", "2" = "Year 2", "3" = "Year 3")
+
+cover.habitat <- ggplot(lta.sum, aes(x = Sub.region, y = Cover))+
+  geom_boxplot(position = "dodge")+
+  facet_wrap(~Survey.Year, labeller = labeller(Survey.Year = year_lab))+
+  labs(y = bquote('Cover (%)'), x = "")+
+  theme_bw()+ 
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.1), axis.text.y = element_text(size = 12, hjust = 1, colour = "black"), axis.title.y = element_text(size = 12), 
+        axis.text.x = element_text(size = 10), axis.title.x = element_blank(), axis.line = element_line(size = 0.5), axis.ticks = element_blank(),
+        strip.text = element_text(size = 10, face = "bold"), strip.background = element_rect(size=0.5), 
+        panel.border =  element_rect(size = 0.5, colour = "black"), plot.margin = margin(12,6),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.text.y = element_blank())
+
+density.plot <- ggplot(n.colonies, aes(x = Sub.region, y = Density))+
+  geom_boxplot(position = "dodge")+
+  facet_wrap(~Survey.Year, labeller = labeller(Survey.Year = year_lab))+
+  labs(y = bquote('Adult Density'~ ('Colonies'~ m^-2)), x = "")+
+  theme_bw()+ 
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.1), axis.text.y = element_text(size = 12, hjust = 1, colour = "black"), axis.title.y = element_text(size = 12), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.line = element_line(size = 0.5), axis.ticks = element_blank(),
+        strip.text = element_text(size = 10, face = "bold"), strip.background = element_rect(size=0.5), 
+        panel.border =  element_rect(size = 0.5, colour = "black"), plot.margin = margin(12,6),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.text.y = element_blank())
+
+recruit.plot <- ggplot(rec.count, aes(x = Sub.region, y = Density))+
+  geom_boxplot(position = "dodge")+
+  facet_wrap(~Survey.Year, labeller = labeller(Survey.Year = year_lab))+
+  labs(y = bquote('Recruit Density'~ ('Colonies'~ m^-2)), x = "")+
+  theme_bw()+ 
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.1), axis.text.y = element_text(size = 12, hjust = 1, colour = "black"), axis.title.y = element_text(size = 12), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.line = element_line(size = 0.5), axis.ticks = element_blank(),
+        strip.text = element_text(size = 10, face = "bold"), strip.background = element_rect(size=0.5), 
+        panel.border =  element_rect(size = 0.5, colour = "black"), plot.margin = margin(12,6),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.text.y = element_blank())
+
+#png("Density recruits and cover year.png",height = 9, width = 12, units = "in", res = 300)
+gridExtra::grid.arrange(recruit.plot + labs(tag = "a")+ theme(text = element_text(size = 15, face = "bold")),
+                        density.plot + labs(tag = "b")+ theme(text = element_text(size = 15, face = "bold")), 
+                        cover.habitat + labs(tag = "c")+ theme(text = element_text(size = 15, face = "bold")))
+
+s1 <- gridExtra::arrangeGrob(recruit.plot + labs(tag = "a")+ theme(text = element_text(size = 15, face = "bold")),
+                        density.plot + labs(tag = "b")+ theme(text = element_text(size = 15, face = "bold")), 
+                        cover.habitat + labs(tag = "c")+ theme(text = element_text(size = 15, face = "bold")))
+#ggsave(file = "Figure S1 - Density recruits and cover year.png", Fig.3, width = 12, height = 9, dpi = 300, units = "in")
+
+
+```

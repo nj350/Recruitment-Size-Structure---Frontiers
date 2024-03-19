@@ -1,0 +1,851 @@
+---
+title: "Size Structure"
+author: "Nick Jones"
+date: "2024-02-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyverse)
+library(reshape2)
+library(ggplot2)
+library(plotrix)
+library(glmmTMB)
+library(emmeans)
+library(MASS)
+library(DHARMa)
+library(performance)
+library(moments)
+library(ggridges)
+library(devEMF)
+library(tidygam)
+library(tidymv)
+```
+
+# Clean and Manipulate Data
+
+### Import Data and classify
+
+```{r}
+recruits <- read.csv("C:\\Users\\nj350\\OneDrive - Nova Southeastern University\\Documents\\PhD\\Chapter 4 - Recruitment and structure\\Data\\All Juveniles.csv")
+colonies <- read.csv("C:\\Users\\nj350\\OneDrive - Nova Southeastern University\\Documents\\PhD\\Chapter 4 - Recruitment and structure\\Data\\All Colonies.csv")
+info <- read.csv("C:\\Users\\nj350\\OneDrive - Nova Southeastern University\\Documents\\PhD\\Chapter 4 - Recruitment and structure\\Data\\Site Info.csv")
+
+recruits$Site <- as.factor(recruits$Site)
+recruits$Species <- as.factor(recruits$Species)
+
+recruits$Size.Class <- as.factor("<2")
+
+colonies$Site <- as.factor(colonies$Site)
+colonies$Species <- as.factor(colonies$Species)
+
+info$Site <- as.factor(info$Site)
+info$Habitat <- as.factor(info$Habitat)
+info$Habitat2 <- as.factor(info$Habitat2)
+info$Sub.region <- as.factor(info$Sub.region)
+
+#Join data with site info
+rec.site <- left_join(info, recruits)
+colonies.site <- left_join(info, colonies)
+
+rec.site <- subset(rec.site, Site != "FTL6")
+rec.site$Site <- droplevels(rec.site$Site)
+
+rec.site$Size.Class <- as.factor("<2")
+rec.site$Survey.Year <- as.factor(rec.site$Survey.Year)
+rec.site$Year <- as.factor(rec.site$Year)
+
+colonies.site <- subset(colonies.site, Site != "FTL6")
+colonies.site$Site <- droplevels(colonies.site$Site)
+```
+# Size structure analysis
+```{r}
+#creates a function where samples will get a random value (n) between 0.5-2cm along a uniform, continuous distribution (runif). We are realistically not going to see anything below 0.5cm
+samp.norm <- function(n) qnorm(runif(n,min=pnorm(0.5),max=pnorm(2)))
+
+set.seed(104949)
+recruit.lengths <- samp.norm(2336) #total number recruits
+
+all.colonies <- recruits %>% 
+  uncount(Abundance) %>% #separates abundance out to create a new column for each individual
+  mutate(Quad = "", Colony.Length = recruit.lengths, Colony.Width = 1, Colony.Height = 1, 
+         X...Live = 100, X...Old = 0, X...Recent  = 0, Notes = "", X = "") %>%
+ dplyr:: select(Survey.Year,
+           Year,
+           Site,
+           Quad,
+           Species,
+           Colony.Length,
+           Colony.Width,
+           Colony.Height,
+           X...Live,
+           X...Old,
+           X...Recent,
+           Notes,
+           X) %>%#adds new columns and details to the juvenile
+  rbind(colonies)
+
+intersect(colnames(all.colonies), colnames(colonies)) #checks for common colnames
+
+all.colonies.site <- left_join(info, all.colonies)
+
+all.colonies.site <- subset(all.colonies.site, Site != "FTL6")
+all.colonies.site$Site <- droplevels(all.colonies.site$Site)
+
+all.colonies.site$fSurvey.Year <- as.factor(all.colonies.site$Survey.Year)
+all.colonies.site$Habitat2 <- factor(all.colonies.site$Habitat2, levels = c("Inner", "Middle", "Outer", "Deep"))
+
+```
+
+### Assign species to either MCAV, PAST, SSID or non-target/rare
+
+```{r}
+
+all.colonies.site$Species.2 <-  ifelse(all.colonies.site$Species == "MCAV", "MCAV",
+                                   ifelse(all.colonies.site$Species =="PAST", "PAST", 
+                                          ifelse(all.colonies.site$Species =="SSID", "SSID","Non Target")))
+
+all.colonies.site$Species.2 <- as.factor(all.colonies.site$Species.2)
+
+```
+# Plot size frequency distribution - Figure 4
+
+```{r, message=F}
+
+all.colonies.site$Species.2 <- factor(all.colonies.site$Species.2,
+                                      levels = c("MCAV", "PAST", "SSID", "Non Target"))
+
+fig.4a <- ggplot(all.colonies.site, aes(x = Colony.Length, y = fSurvey.Year, fill = Species.2))+
+  geom_density_ridges(alpha = 0.5, quantile_lines=TRUE,
+                      quantile_fun=function(x,...)mean(x))+
+  geom_vline(xintercept = 10, lty = 2)+
+  facet_grid(Species.2~Habitat2, scales = "free_x")+
+ # geom_text(aes(label = n, y = fYear), position = position_dodge(width = 0.9), vjust = 1, size = 3)+
+  theme_bw()+
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        strip.text = element_text(size = 10, face = "bold"), 
+        strip.background = element_rect(size=0.5, fill = "lightgrey"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.text.y = element_text(size = 10, face = "bold"))+
+  scale_x_continuous(limits = c(-10, 100), breaks = c(0, 50, 100))
+
+mean(log(all.colonies.site$Colony.Length))
+
+fig.4b <- ggplot(all.colonies.site, aes(x = log(Colony.Length), y = fSurvey.Year, fill = Species.2))+
+  geom_density_ridges(alpha = 0.5, quantile_lines=TRUE,
+                      quantile_fun=function(x,...)mean(x))+
+ # geom_vline(xintercept = 1.24, lty = 2)+ option to add log of mean colony.length
+  facet_grid(Species.2~Habitat2)+
+ # geom_text(aes(label = n, y = fYear), position = position_dodge(width = 0.9), vjust = 1, size = 3)+
+  theme_bw()+
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        strip.text = element_text(size = 10, face = "bold"), 
+        strip.background = element_rect(size=0.5, fill = "lightgrey"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.text.y = element_text(size = 10, face = "bold"))+
+    scale_x_continuous(breaks = c(-2.5, 0, 2.5, 5))
+
+
+gridExtra::grid.arrange(fig.4a + labs(tag = "a"),
+                          fig.4b +labs(tag = "b"), ncol = 2)
+       
+Fig.4 <- gridExtra::arrangeGrob(fig.4a + labs(tag = "a"),
+                          fig.4b +labs(tag = "b"), ncol = 2)
+#ggsave(file = "Figure 4 - Size Structure.png", Fig.4, width = 16, height = 8, dpi = 300, units = "in")
+#to save as emf, open in r file not Rmd
+
+```
+### Sub regional differences for supplementary
+```{r, message=FALSE}
+
+all.colonies.site$Sub.region <- factor(all.colonies.site$Sub.region,
+                                      levels = c("Deerfield", "Broward", "Miami"))
+
+fig.S2a <- ggplot(all.colonies.site, aes(x = Colony.Length, y = fSurvey.Year, fill = Species.2))+
+  geom_density_ridges(alpha = 0.5, quantile_lines=TRUE,
+                      quantile_fun=function(x,...)mean(x))+
+  geom_vline(xintercept = 10, lty = 2)+
+  facet_grid(Species.2~Sub.region, scales = "free_x")+
+ # geom_text(aes(label = n, y = fYear), position = position_dodge(width = 0.9), vjust = 1, size = 3)+
+  theme_bw()+
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        strip.text = element_text(size = 10, face = "bold"), 
+        strip.background = element_rect(size=0.5, fill = "lightgrey"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.text.y = element_text(size = 10, face = "bold"))
+
+fig.S2B <- ggplot(all.colonies.site, aes(x = log(Colony.Length), y = fSurvey.Year, fill = Species.2))+
+  geom_density_ridges(alpha = 0.5, quantile_lines=TRUE,
+                      quantile_fun=function(x,...)mean(x))+
+  facet_grid(Species.2~Sub.region)+
+ # geom_text(aes(label = n, y = fYear), position = position_dodge(width = 0.9), vjust = 1, size = 3)+
+  theme_bw()+
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        strip.text = element_text(size = 10, face = "bold"), 
+        strip.background = element_rect(size=0.5, fill = "lightgrey"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.text.y = element_text(size = 10, face = "bold"))
+
+gridExtra::grid.arrange(fig.S2a + labs(tag = "a"),
+                          fig.S2B +labs(tag = "b"), ncol = 2)
+
+Fig.S2 <- gridExtra::arrangeGrob(fig.S2a + labs(tag = "a"),
+                          fig.S2B +labs(tag = "b"), ncol = 2)
+#ggsave(file = "Figure S2 - Size Structure.png", Fig.S2, width = 16, height = 8, dpi = 300, units = "in")
+
+
+```
+# Calculate spatiotemporal variation in mean cv, CV, Skew, Kurtosis
+
+```{r}
+Mean.Length <- group_by(all.colonies.site, Survey.Year, Year, Site, Habitat2, Sub.region, Latitude, Longitude, Depth, Distance.to.shoreline) %>% 
+  summarise(Length = mean(Colony.Length), 
+            SE.Length = std.error(Colony.Length), 
+            SD.Length = sd(Colony.Length),
+            Max = max(Colony.Length), 
+            Median = median(Colony.Length), 
+            Height = max(Colony.Height), 
+            CV = (sd(Colony.Length)/mean(Colony.Length))*100, #low indicates little variation, high indicates highly variable
+            Skew = skewness(Colony.Length),# measures level of asymmetry positive = more small colonies, negative = more large colonies
+            Kurt = kurtosis(Colony.Length)) #defines tails of distribution 
+#normal (mesokurtic) ~3 
+#positive = very peaked (leptokurtic) = >3 -> little transition between size classes and slow population growth, if heavy tails then large outliers
+#negative (platykurtic) = <3 -> not very peaked and flat tails = transitions between species and small outliers
+
+group_by(all.colonies.site, Survey.Year) %>% 
+  summarise(Length = mean(Colony.Length), SE.Length = std.error(Colony.Length),
+            Max = max(Colony.Length), Height = max(Colony.Height), 
+            CV = (sd(Colony.Length)/mean(Colony.Length))*100,
+             Skew = skewness(Colony.Length),
+            Kurt = kurtosis(Colony.Length),
+            Log.mean = mean(log(Colony.Length)),
+             log.CV = (sd(log(Colony.Length))/mean(log(Colony.Length)))*100,
+             log.Skew = skewness(log(Colony.Length)),
+            log.Kurt = kurtosis(log(Colony.Length)))
+
+group_by(all.colonies.site, Sub.region) %>% 
+  summarise(Length = mean(Colony.Length), SE.Length = std.error(Colony.Length),
+            Max = max(Colony.Length), Height = max(Colony.Height), 
+            CV = (sd(Colony.Length)/mean(Colony.Length))*100,
+             Skew = skewness(Colony.Length),
+            Kurt = kurtosis(Colony.Length),
+            Log.mean = mean(log(Colony.Length)),
+             log.CV = (sd(log(Colony.Length))/mean(log(Colony.Length)))*100,
+             log.Skew = skewness(log(Colony.Length)),
+            log.Kurt = kurtosis(log(Colony.Length)))
+
+group_by(all.colonies.site, Species.2, Habitat2) %>% 
+  summarise(Length = mean(Colony.Length), SE.Length = std.error(Colony.Length),
+            Max = max(Colony.Length), Height = max(Colony.Height), 
+            CV = (sd(Colony.Length)/mean(Colony.Length))*100,
+             Skew = skewness(Colony.Length),
+            Kurt = kurtosis(Colony.Length),
+            Log.mean = mean(log(Colony.Length)),
+             log.CV = (sd(log(Colony.Length))/mean(log(Colony.Length)))*100,
+             log.Skew = skewness(log(Colony.Length)),
+            log.Kurt = kurtosis(log(Colony.Length)))
+
+```
+# Analyse Frequency Distribution - temporal, dif to norm/lognorm, interspecific and then spatial
+
+### MCAV
+```{r, results='hide', warning=FALSE}
+
+mcav <- subset(all.colonies.site, Species.2 == "MCAV")
+mcav$log <- log(mcav$Colony.Length)
+
+ks.test(subset(mcav, Survey.Year == 1)$Colony.Length, subset(mcav, Survey.Year == 2)$Colony.Length)#same distribution
+ks.test(subset(mcav, Survey.Year == 1)$Colony.Length, subset(mcav, Survey.Year == 3)$Colony.Length)#same distribution
+ks.test(subset(mcav, Survey.Year == 2)$Colony.Length, subset(mcav, Survey.Year == 3)$Colony.Length)#same distribution
+
+mcav3 <- subset(mcav, Survey.Year == "3")
+
+ks.test(mcav3$Colony.Length, "pnorm", mean (mcav3$Colony.Length), sd(mcav3$Colony.Length))#sig different to normal
+ks.test(mcav3$log, "pnorm", mean(mcav3$log), sd(mcav3$log)) #sig different to normal
+
+mcav3.deep <- subset(mcav, Habitat2 == "Deep")
+
+ks.test(mcav3.deep$log, "pnorm", mean(mcav3.deep$log), sd(mcav3.deep$log)) #sig different to normal
+
+
+ks.test(subset(mcav3, Habitat2 == "Inner")$Colony.Length, subset(mcav3, Habitat2 == "Middle")$Colony.Length)#sig dif
+ks.test(subset(mcav3, Habitat2 == "Inner")$Colony.Length, subset(mcav3, Habitat2 == "Outer")$Colony.Length)#different frequency distribution
+ks.test(subset(mcav3, Habitat2 == "Inner")$Colony.Length, subset(mcav3, Habitat2 == "Deep")$Colony.Length)#different distribution
+ks.test(subset(mcav3, Habitat2 == "Middle")$Colony.Length, subset(mcav3, Habitat2 == "Outer")$Colony.Length) #same distribution
+ks.test(subset(mcav3, Habitat2 == "Middle")$Colony.Length, subset(mcav3, Habitat2 == "Deep")$Colony.Length) #different frequency distribution
+ks.test(subset(mcav3, Habitat2 == "Outer")$Colony.Length, subset(mcav3, Habitat2 == "Deep")$Colony.Length)#different frequency distribution
+
+ks.test(subset(mcav3, Habitat2 == "Inner")$log, subset(mcav3, Habitat2 == "Middle")$log)#sig dif
+ks.test(subset(mcav3, Habitat2 == "Inner")$log, subset(mcav3, Habitat2 == "Outer")$log)#different frequency distribution
+ks.test(subset(mcav3, Habitat2 == "Inner")$log, subset(mcav3, Habitat2 == "Deep")$log)#same distribution
+ks.test(subset(mcav3, Habitat2 == "Middle")$log, subset(mcav3, Habitat2 == "Outer")$log) #same distribution
+ks.test(subset(mcav3, Habitat2 == "Middle")$log, subset(mcav3, Habitat2 == "Deep")$log) #different frequency distribution
+ks.test(subset(mcav3, Habitat2 == "Outer")$log, subset(mcav3, Habitat2 == "Deep")$log)#different frequency distribution
+
+```
+
+### PAST
+```{r, results='hide', warning=FALSE}
+
+past <- subset(all.colonies.site, Species.2 == "PAST")
+past$log <- log(past$Colony.Length)
+
+ks.test(subset(past, Survey.Year == 1)$Colony.Length, subset(past, Survey.Year == 2)$Colony.Length)#same distribution
+ks.test(subset(past, Survey.Year == 1)$Colony.Length, subset(past, Survey.Year == 3)$Colony.Length)#same distribution
+ks.test(subset(past, Survey.Year == 2)$Colony.Length, subset(past, Survey.Year == 3)$Colony.Length)#same distribution
+
+past3 <- subset(past, Survey.Year == "3")
+
+ks.test(past3$Colony.Length, "pnorm", mean (past3$Colony.Length), sd(past3$Colony.Length))#sig different to normal
+ks.test(past3$log, "pnorm", mean(past3$log), sd(past3$log)) #sig different to normal
+
+ks.test(subset(past3, Habitat2 == "Inner")$Colony.Length, subset(past3, Habitat2 == "Middle")$Colony.Length)#same distribution
+ks.test(subset(past3, Habitat2 == "Inner")$Colony.Length, subset(past3, Habitat2 == "Outer")$Colony.Length)##same distribution
+ks.test(subset(past3, Habitat2 == "Inner")$Colony.Length, subset(past3, Habitat2 == "Deep")$Colony.Length)#sig dif
+ks.test(subset(past3, Habitat2 == "Middle")$Colony.Length, subset(past3, Habitat2 == "Outer")$Colony.Length) #same distribution
+ks.test(subset(past3, Habitat2 == "Middle")$Colony.Length, subset(past3, Habitat2 == "Deep")$Colony.Length) #same distribution
+ks.test(subset(past3, Habitat2 == "Outer")$Colony.Length, subset(past3, Habitat2 == "Deep")$Colony.Length)#same distribution
+
+ks.test(subset(past3, Habitat2 == "Inner")$log, subset(past3, Habitat2 == "Middle")$log)#same distribution
+ks.test(subset(past3, Habitat2 == "Inner")$log, subset(past3, Habitat2 == "Outer")$log)##same distribution
+ks.test(subset(past3, Habitat2 == "Inner")$log, subset(past3, Habitat2 == "Deep")$log)#sig dif
+ks.test(subset(past3, Habitat2 == "Middle")$log, subset(past3, Habitat2 == "Outer")$log) #same distribution
+ks.test(subset(past3, Habitat2 == "Middle")$log, subset(past3, Habitat2 == "Deep")$log) #same distribution
+ks.test(subset(past3, Habitat2 == "Outer")$log, subset(past3, Habitat2 == "Deep")$log)#same distribution
+```
+
+### SSID
+
+```{r, results='hide', warning=FALSE}
+ssid <- subset(all.colonies.site, Species.2 == "SSID")
+ssid$log <- log(ssid$Colony.Length)
+
+ks.test(subset(ssid, Survey.Year == 1)$Colony.Length, subset(ssid, Survey.Year == 2)$Colony.Length)#sig dif - p=0.0002
+ks.test(subset(ssid, Survey.Year == 1)$Colony.Length, subset(ssid, Survey.Year == 3)$Colony.Length)#sig dif p = 0.0007
+ks.test(subset(ssid, Survey.Year == 2)$Colony.Length, subset(ssid, Survey.Year == 3)$Colony.Length)#sig dif p <0.0001
+
+ssid1 <- subset(ssid, Survey.Year == "1")
+ks.test(ssid1$Colony.Length, "pnorm", mean (ssid1$Colony.Length), sd(ssid1$Colony.Length))#sig different to normal
+ks.test(ssid1$log, "pnorm", mean(ssid1$log), sd(ssid1$log)) #sig different to normal
+
+ssid2 <- subset(ssid, Survey.Year == "2")
+ks.test(ssid2$Colony.Length, "pnorm", mean (ssid2$Colony.Length), sd(ssid2$Colony.Length))#sig different to normal
+ks.test(ssid2$log, "pnorm", mean(ssid2$log), sd(ssid2$log)) #sig different to normal
+
+ssid3 <- subset(ssid, Survey.Year == "3")
+ks.test(ssid3$Colony.Length, "pnorm", mean (ssid3$Colony.Length), sd(ssid3$Colony.Length))#sig different to normal
+ks.test(ssid3$log, "pnorm", mean(ssid3$log), sd(ssid3$log)) #sig different to normal
+
+ks.test(subset(ssid1, Habitat2 == "Inner")$Colony.Length, subset(ssid1, Habitat2 == "Middle")$Colony.Length)#sig dif
+ks.test(subset(ssid1, Habitat2 == "Inner")$Colony.Length, subset(ssid1, Habitat2 == "Outer")$Colony.Length)#sig dif
+ks.test(subset(ssid1, Habitat2 == "Inner")$Colony.Length, subset(ssid1, Habitat2 == "Deep")$Colony.Length)#sig dif
+ks.test(subset(ssid1, Habitat2 == "Middle")$Colony.Length, subset(ssid1, Habitat2 == "Outer")$Colony.Length) #same distribution
+ks.test(subset(ssid1, Habitat2 == "Middle")$Colony.Length, subset(ssid1, Habitat2 == "Deep")$Colony.Length) #sig dif p =0.02
+ks.test(subset(ssid1, Habitat2 == "Outer")$Colony.Length, subset(ssid1, Habitat2 == "Deep")$Colony.Length)#same distribution
+
+ks.test(subset(ssid2, Habitat2 == "Inner")$Colony.Length, subset(ssid2, Habitat2 == "Middle")$Colony.Length)#sig dif
+ks.test(subset(ssid2, Habitat2 == "Inner")$Colony.Length, subset(ssid2, Habitat2 == "Outer")$Colony.Length)#sig dif
+ks.test(subset(ssid2, Habitat2 == "Inner")$Colony.Length, subset(ssid2, Habitat2 == "Deep")$Colony.Length)#sig dif
+ks.test(subset(ssid2, Habitat2 == "Middle")$Colony.Length, subset(ssid2, Habitat2 == "Outer")$Colony.Length) #same distribution
+ks.test(subset(ssid2, Habitat2 == "Middle")$Colony.Length, subset(ssid2, Habitat2 == "Deep")$Colony.Length) #sig dif p=0.03
+ks.test(subset(ssid2, Habitat2 == "Outer")$Colony.Length, subset(ssid2, Habitat2 == "Deep")$Colony.Length)#same distribution
+
+ks.test(subset(ssid3, Habitat2 == "Inner")$Colony.Length, subset(ssid3, Habitat2 == "Middle")$Colony.Length)#sig dif
+ks.test(subset(ssid3, Habitat2 == "Inner")$Colony.Length, subset(ssid3, Habitat2 == "Outer")$Colony.Length)#sig dif
+ks.test(subset(ssid3, Habitat2 == "Inner")$Colony.Length, subset(ssid3, Habitat2 == "Deep")$Colony.Length)#sig dif
+ks.test(subset(ssid3, Habitat2 == "Middle")$Colony.Length, subset(ssid3, Habitat2 == "Outer")$Colony.Length) #same distribution
+ks.test(subset(ssid3, Habitat2 == "Middle")$Colony.Length, subset(ssid3, Habitat2 == "Deep")$Colony.Length) #same distribution
+ks.test(subset(ssid3, Habitat2 == "Outer")$Colony.Length, subset(ssid3, Habitat2 == "Deep")$Colony.Length)#same distribution
+
+```
+
+### Non Target
+
+```{r, results='hide', warning=FALSE}
+non.target <- subset(all.colonies.site, Species.2 == "Non Target")
+non.target$log <- log(non.target$Colony.Length)
+
+ks.test(subset(non.target, Survey.Year == 1)$Colony.Length, subset(non.target, Survey.Year == 2)$Colony.Length)#same distribution
+ks.test(subset(non.target, Survey.Year == 1)$Colony.Length, subset(non.target, Survey.Year == 3)$Colony.Length)#sig dif p =0.007
+ks.test(subset(non.target, Survey.Year == 2)$Colony.Length, subset(non.target, Survey.Year == 3)$Colony.Length)#same distribution
+
+non.target1 <- subset(non.target, Survey.Year == "1")
+ks.test(non.target1$Colony.Length, "pnorm", mean (non.target1$Colony.Length), sd(non.target1$Colony.Length))#sig different to normal
+ks.test(non.target1$log, "pnorm", mean(non.target1$log), sd(non.target1$log)) #sig different to normal
+
+non.target3 <- subset(non.target, Survey.Year == "3")
+ks.test(non.target3$Colony.Length, "pnorm", mean (non.target3$Colony.Length), sd(non.target3$Colony.Length))#sig different to normal
+
+ks.test(non.target3$log, "pnorm", mean(non.target3$log), sd(non.target3$log)) #sig different to normal
+
+ks.test(subset(non.target1, Habitat2 == "Inner")$Colony.Length, subset(non.target1, Habitat2 == "Middle")$Colony.Length)#same distribution
+ks.test(subset(non.target1, Habitat2 == "Inner")$Colony.Length, subset(non.target1, Habitat2 == "Outer")$Colony.Length)##same distribution
+ks.test(subset(non.target1, Habitat2 == "Inner")$Colony.Length, subset(non.target1, Habitat2 == "Deep")$Colony.Length)#sig dif
+ks.test(subset(non.target1, Habitat2 == "Middle")$Colony.Length, subset(non.target1, Habitat2 == "Outer")$Colony.Length) #same distribution
+ks.test(subset(non.target1, Habitat2 == "Middle")$Colony.Length, subset(non.target1, Habitat2 == "Deep")$Colony.Length) #sig dif
+ks.test(subset(non.target1, Habitat2 == "Outer")$Colony.Length, subset(non.target1, Habitat2 == "Deep")$Colony.Length)#sig dif
+
+ks.test(subset(non.target3, Habitat2 == "Inner")$Colony.Length, subset(non.target3, Habitat2 == "Middle")$Colony.Length)#same distribution
+ks.test(subset(non.target3, Habitat2 == "Inner")$Colony.Length, subset(non.target3, Habitat2 == "Outer")$Colony.Length)##same distribution
+ks.test(subset(non.target3, Habitat2 == "Inner")$Colony.Length, subset(non.target3, Habitat2 == "Deep")$Colony.Length)#sig dif
+ks.test(subset(non.target3, Habitat2 == "Middle")$Colony.Length, subset(non.target3, Habitat2 == "Outer")$Colony.Length) #same distribution
+ks.test(subset(non.target3, Habitat2 == "Middle")$Colony.Length, subset(non.target3, Habitat2 == "Deep")$Colony.Length) #sig dif
+ks.test(subset(non.target3, Habitat2 == "Outer")$Colony.Length, subset(non.target3, Habitat2 == "Deep")$Colony.Length)#sig dif
+```
+
+### Interspecific variation in frequency distribution
+
+```{r, warning=FALSE, results='hide'}
+
+ks.test(mcav3$Colony.Length, ssid1$Colony.Length)
+ks.test(mcav3$Colony.Length, ssid2$Colony.Length)
+ks.test(mcav3$Colony.Length, ssid3$Colony.Length)
+ks.test(mcav3$Colony.Length, past3$Colony.Length)
+ks.test(mcav3$Colony.Length, non.target1$Colony.Length)
+ks.test(mcav3$Colony.Length, non.target3$Colony.Length) #mcav sig dif to all
+
+ks.test(past3$Colony.Length, ssid1$Colony.Length) #sig dif p <0.0001
+ks.test(past3$Colony.Length, ssid2$Colony.Length) #sig dif p <0.0001
+ks.test(past3$Colony.Length, ssid3$Colony.Length) #sig dif p <0.0001
+ks.test(past3$Colony.Length, non.target1$Colony.Length)#sig dif p=0.01
+ks.test(past3$Colony.Length, non.target3$Colony.Length) #past sg dif to SSID but not non-targets in year 3
+
+ks.test(ssid1$Colony.Length, non.target1$Colony.Length)
+ks.test(ssid2$Colony.Length, non.target1$Colony.Length) 
+ks.test(ssid3$Colony.Length, non.target1$Colony.Length)
+
+ks.test(ssid1$Colony.Length, non.target3$Colony.Length)
+ks.test(ssid2$Colony.Length, non.target3$Colony.Length) 
+ks.test(ssid3$Colony.Length, non.target3$Colony.Length) #ssids sig dif to everything
+
+
+### Log Normal - you get the same results as untransformed - just use untranformed data
+
+ks.test(mcav3$log, ssid1$log)
+ks.test(mcav3$log, ssid2$log)
+ks.test(mcav3$log, ssid3$log)
+ks.test(mcav3$log, past3$log)
+ks.test(mcav3$log, non.target1$log)
+ks.test(mcav3$log, non.target3$log) #mcav sig dif to all
+
+ks.test(past3$log, ssid1$log) #sig dif p <0.0001
+ks.test(past3$log, ssid2$log) #sig dif p <0.0001
+ks.test(past3$log, ssid3$log) #sig dif p <0.0001
+ks.test(past3$log, non.target1$log)#sig dif p=0.01
+ks.test(past3$log, non.target3$log) #past sg dif to SSID but not non-targets in year 3
+
+ks.test(ssid1$log, non.target1$log)
+ks.test(ssid2$log, non.target1$log) 
+ks.test(ssid3$log, non.target1$log)
+
+ks.test(ssid1$log, non.target3$log)
+ks.test(ssid2$log, non.target3$log) 
+ks.test(ssid3$log, non.target3$log) #ssids sig dif to everything
+
+
+```
+
+#Analyse Mean length, CV, Skew and Kurtosis - Add species.2 to these models and retest
+
+### Mean length - need to do against dist from shore, depth
+
+##### Lots of the variation in size structure is site based - look at what it is about the sites - depth/distance from shore
+
+### Plot size features against depth and distance from shore
+```{r}
+
+Mean.Length.sp <- group_by(all.colonies.site, Survey.Year, Year, Site, Habitat2, Sub.region, Latitude, Longitude, Depth, Distance.to.shoreline, Species.2) %>%   summarise(Length = mean(Colony.Length), 
+            SE.Length = std.error(Colony.Length), 
+            SD.Length = sd(Colony.Length),
+            Max = max(Colony.Length), 
+            Median = median(Colony.Length), 
+            Height = max(Colony.Height), 
+            CV = (sd(Colony.Length)/mean(Colony.Length))*100, #low indicates little variation, high indicates highly variable
+            Skew = skewness(Colony.Length),# measures level of asymmetry positive = more small colonies, negative = more large colonies
+            Kurt = kurtosis(Colony.Length))%>%
+  na.omit()
+
+mean.length2 <- subset(Mean.Length.sp, Length < 30) #removed MCAV at FTL4 and FTL5 as outliers 
+
+ggplot(subset(Mean.Length.sp, Survey.Year == 3)) +
+  geom_point(aes(x = Distance.to.shoreline, y = Length), colour = "gray")+
+ geom_point(aes(x = Distance.to.shoreline, y = Length), shape = 1, colour = "black")+
+  facet_wrap(~Species.2)+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 12, colour = "black"),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(12,6),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+ggplot(subset(Mean.Length.sp, Survey.Year == 3)) +
+  geom_point(aes(x = Distance.to.shoreline, y = Depth, size = CV), colour = "gray")+
+ geom_point(aes(x = Distance.to.shoreline, y = Depth, size = CV), shape = 1, colour = "black")+
+  facet_wrap(~Species.2)+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 12, colour = "black"),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(12,6),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+ggplot(subset(Mean.Length.sp, Survey.Year == 3)) +
+   geom_point(aes(x = Distance.to.shoreline, y = Depth, size=Skew), colour = "gray")+
+ geom_point(aes(x = Distance.to.shoreline, y = Depth, size = Skew), shape = 1, colour = "black")+
+    facet_wrap(~Species.2)+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 12, colour = "black"),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(12,6),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+ggplot(subset(Mean.Length.sp, Survey.Year == 3)) +
+  geom_point(aes(x = Distance.to.shoreline, y = Depth, size=Kurt), colour = "gray")+
+ geom_point(aes(x = Distance.to.shoreline, y = Depth, size = Kurt), shape = 1, colour = "black")+
+    facet_wrap(~Species.2)+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 12, colour = "black"),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(12,6),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+
+
+```
+### Analyse CV, Skew, Kurt vs Depth
+```{r, warning=FALSE}
+
+cor(Mean.Length.sp$Distance.to.shoreline, Mean.Length.sp$Depth, method = "spearman") #correlated at 82%
+
+hist(subset(Mean.Length.sp, Survey.Year == 3)$Length)
+scatter.smooth(x = subset(Mean.Length.sp, Survey.Year == 3)$Distance.to.shoreline, y = subset(Mean.Length.sp, Survey.Year == 3)$Depth)
+
+length.space1 <- glm(Length ~ Species.2 * Distance.to.shoreline * Depth, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3))
+length.space2 <- glm(Length ~ Species.2 * Distance.to.shoreline + Depth, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3))
+length.space3 <- glm(Length ~ Species.2 * Depth + Distance.to.shoreline, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3))
+length.space4 <- glm(Length ~ Species.2 + Depth + Distance.to.shoreline, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3))
+length.space5 <- glm(Length ~  Species.2 * Distance.to.shoreline, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3)) 
+length.space6 <- glm(Length ~  Species.2 * Depth, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3))
+length.space7 <- glm(Length ~  Species.2 + Distance.to.shoreline, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3)) 
+length.space8 <- glm(Length ~  Species.2 + Depth, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3)) 
+length.space9 <- glm(Length ~  Species.2, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3)) 
+length.space10 <- glm(Length ~  Distance.to.shoreline, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3)) 
+length.space11 <- glm(Length ~  Depth, family = Gamma(log), data = subset(mean.length2, Survey.Year == 3))
+
+AIC(length.space1, length.space2, length.space3, length.space4, length.space5, length.space6, length.space7, length.space8, length.space9, length.space10, length.space11)
+
+summary(length.space3) #2
+
+simulationOutput <- simulateResiduals(length.space3, n = 1000)
+plot(simulationOutput) #removed MCAV at FTL4 and FTL5 as outliers 
+testOutliers(simulationOutput) #
+
+emtrends(length.space3, ~ Species.2, var = "Depth")
+emmip(length.space3, Species.2 ~ Depth, cov.reduce = range, type="response")+
+   theme_bw()+
+  theme(legend.position = c(0.9, 0.2),
+        legend.title = element_blank(),
+        axis.text.y = element_text(size = 12, colour = "black"),
+        axis.title.x = element_text(size = 12, colour = "black"), 
+        axis.title.y = element_text(size = 12, colour = "black"), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) 
+
+#can predict mean lengths using specific input, e.g., certain depth and distance to shore
+mylist <- list(Depth=5,Distance.to.shoreline=1000)
+emmeans(length.space1, ~ Distance.to.shoreline*Depth, at=mylist, type="response")
+
+mylist2 <- list(Depth=5,Distance.to.shoreline=2000)
+emmeans(length.space1, ~ Distance.to.shoreline*Depth, at=mylist2, type = "response")
+
+###or species and depth
+mylist <- list(Depth=5,Species.2="MCAV")
+emmeans(length.space3, ~ Species.2*Depth, at=mylist, type="response")
+
+mylist2 <- list(Depth=10,Species.2="MCAV")
+emmeans(length.space3, ~ Species.2*Depth, at=mylist2, type = "response")
+
+#fitted a gam using the full dataset, full model residuals not ideal, next best is distance to shore by species. Looks good, doesn't add much more than GLM
+library(mgcv)
+gam <- mgcv::gam(Length~s(Distance.to.shoreline, by = Species.2)+s(Depth, by = Species.2) + Species.2, 
+                    family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+
+gam1 <- mgcv::gam(Length~s(Distance.to.shoreline, by = Species.2)+Species.2, 
+                    family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+
+gam2 <- mgcv::gam(Length~s(Depth, by = Species.2, k =5)+Species.2, 
+                    family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+
+gam3 <- mgcv::gam(Length~s(Distance.to.shoreline, by = Species.2), 
+                    family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+
+gam4 <- mgcv::gam(Length~s(Depth, by = Species.2), 
+                    family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+
+AIC(gam, gam1, gam2, gam3, gam4) #gam 2 best
+
+summary(gam1)
+anova(gam1)
+gam.check(gam1) #significant p-values indicate that residuals are not randomly distributed
+plot(gam1)
+
+model_p <- predict_gam(gam1) #predict from model
+model_p$fit <- exp(model_p$fit)
+model_p$se.fit <- exp(model_p$se.fit)
+
+
+gam.mean.plot <- model_p %>% #plot predicted model
+  ggplot(aes(Distance.to.shoreline, fit)) +
+  geom_smooth_ci(Species.2)+
+  theme_bw()+
+  theme(legend.position = c(0.9, 0.85),
+        legend.title = element_blank(),
+        axis.text.y = element_text(size = 12, colour = "black"),
+        axis.title.x = element_text(size = 12, colour = "black"), 
+        axis.title.y = element_text(size = 12, colour = "black"),
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(x = "Distance to Shoreline (m)", y = "Mean adult colony Diameter")
+
+gam.mean.plot
+
+#ggsave(gam.mean.plot, file = "Figure S4. Colony Diameter.png", width = 7, height = 5, dpi = 300)
+
+
+```
+
+```{r}
+
+cv.space1 <- glm(CV ~ Species.2 * Distance.to.shoreline * Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+cv.space2 <- glm(CV ~ Species.2 * Distance.to.shoreline + Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+cv.space3 <- glm(CV ~ Species.2 * Depth + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+cv.space4 <- glm(CV ~ Species.2 + Depth + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+cv.space5 <- glm(CV ~  Species.2 * Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+cv.space6 <- glm(CV ~  Species.2 * Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+cv.space7 <- glm(CV ~  Species.2 + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+cv.space8 <- glm(CV ~  Species.2 + Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+cv.space9 <- glm(CV ~  Species.2, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+cv.space10 <- glm(CV ~  Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+cv.space11 <- glm(CV ~  Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+
+AIC(cv.space1, cv.space2, cv.space3, cv.space4, cv.space5, cv.space6, cv.space7, cv.space8, cv.space9, cv.space10, cv.space11)
+summary(cv.space7) #2 and 3 are equivalent as Depth and Dist from shore correlate @ 82% - used 2, residuals better than cv ~ Depth
+summary(cv.space9)
+
+simulationOutput <- simulateResiduals(cv.space9, n = 1000)
+plot(simulationOutput) #looks good
+testOutliers(simulationOutput) #no outliers
+
+r2(cv.space9)
+
+emm.cv <- emmeans(cv.space9, ~ Species.2)
+pairs(emm.cv, type = "response")
+contrast(emm.cv)
+
+emm.cv.plot <- plot(emm.cv, type = "response")+
+ theme(legend.position = "none",
+        legend.title = element_blank(),
+        axis.text.y = element_text(size = 12, colour = "black"),
+        axis.title.x = element_text(size = 12, colour = "black"), 
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(x = "Estimated Marginal Means of Coefficient of Variation")
+
+emm.cv.plot
+
+#ggsave(emm.cv.plot, file = "Figure S5 - Coefficient of variation.png", width = 7, height = 5, dpi = 300)
+
+```
+###
+
+```{r}
+#modelled as mean +1 to meet assumptions of gamma
+
+hist(Mean.Length.sp$Skew)  #some small negative numbers therefore add a constant to fit gamma model
+skew.space1 <- glm(Skew+1 ~ Species.2 * Distance.to.shoreline * Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+skew.space2 <- glm(Skew+1 ~ Species.2 * Distance.to.shoreline + Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+skew.space3 <- glm(Skew+1 ~ Species.2 * Depth + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+skew.space4 <- glm(Skew+1 ~ Species.2 + Depth + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+skew.space5 <- glm(Skew+1 ~  Species.2 * Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+skew.space6 <- glm(Skew+1 ~  Species.2 * Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+skew.space7 <- glm(Skew+1 ~  Species.2 + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+skew.space8 <- glm(Skew+1 ~  Species.2 + Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+skew.space9 <- glm(Skew+1 ~  Species.2, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+skew.space10 <- glm(Skew+1 ~  Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+skew.space11 <- glm(Skew+1 ~  Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+
+AIC(skew.space1, skew.space2, skew.space3, skew.space4, skew.space5, skew.space6, skew.space7, skew.space8, skew.space9, skew.space10, skew.space11)
+summary(skew.space3)
+
+simulationOutput <- simulateResiduals(skew.space3, n = 1000)
+plot(simulationOutput) #looks good
+testOutliers(simulationOutput) #no outliers
+
+r2(skew.space3)
+
+emtrends(skew.space3, ~ Species.2, var = "Depth")
+
+emm.skew.plot <- emmip(skew.space3, Species.2 ~ Depth, cov.reduce = range, type = "response")+
+   theme_bw()+
+  theme(legend.position = c(0.9, 0.85),
+        legend.title = element_blank(),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),
+        axis.title.x = element_text(size = 12, hjust = 1, colour = "black"), 
+        axis.title.y = element_text(size = 12, hjust = 1, colour = "black"), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(x = "Depth (m)")
+
+emm.skew.plot
+#ggsave(emm.skew.plot, file = "Figure S7 - Skewness.png", width = 7, height = 5, dpi = 300)
+```
+####
+
+```{r}
+hist(Mean.Length.sp$Kurt)
+kurt.space1 <- glm(Kurt ~ Species.2 * Distance.to.shoreline * Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+kurt.space2 <- glm(Kurt ~ Species.2 * Distance.to.shoreline + Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+kurt.space3 <- glm(Kurt ~ Species.2 * Depth + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+kurt.space4 <- glm(Kurt ~ Species.2 + Depth + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+kurt.space5 <- glm(Kurt ~  Species.2 * Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+kurt.space6 <- glm(Kurt ~  Species.2 * Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+kurt.space7 <- glm(Kurt ~  Species.2 + Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+kurt.space8 <- glm(Kurt ~  Species.2 + Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+kurt.space9 <- glm(Kurt ~  Species.2, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+kurt.space10 <- glm(Kurt ~  Distance.to.shoreline, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3)) 
+kurt.space11 <- glm(Kurt ~  Depth, family = Gamma(log), data = subset(Mean.Length.sp, Survey.Year == 3))
+
+AIC(kurt.space1, kurt.space2, kurt.space3, kurt.space4, kurt.space5, kurt.space6, kurt.space7, kurt.space8, kurt.space9, kurt.space10, kurt.space11)
+summary(kurt.space3)
+
+simulationOutput <- simulateResiduals(kurt.space3, n = 1000)
+plot(simulationOutput) #looks good
+testOutliers(simulationOutput) #no outliers
+
+r2(kurt.space3)
+
+emtrends(kurt.space3, ~ Species.2, var = "Depth", type = "response")
+em.kurt.plot <- emmip(kurt.space3, Species.2 ~ Depth, cov.reduce = range, type = "response")+
+   theme_bw()+
+  theme(legend.position = c(0.9, 0.85),
+        legend.title = element_blank(),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),
+        axis.title.x = element_text(size = 12, hjust = 1, colour = "black"), 
+        axis.title.y = element_text(size = 12, hjust = 1, colour = "black"), 
+        axis.text.x = element_text(size = 10, colour = "black"),
+        plot.margin = margin(rep(15, 4)), 
+        axis.line = element_line(size = c(0.5, 0.5, 0.5, 0.5)), 
+        panel.grid.major.x = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(x = "Depth (m)")
+
+em.kurt.plot
+
+#ggsave(em.kurt.plot, file = "Figure S8 - Kurtosis.png", width = 7, height = 5, dpi = 300)
+```
+ 
+```{r}
+
+ggplot(Mean.Length.sp) +
+  geom_point(aes(x = Length, y = CV, colour = Habitat2))+
+  facet_wrap(~Species.2)+
+  theme(legend.position = "none", 
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, hjust = 1, colour = "black"),  
+        axis.text.x = element_text(size = 12, colour = "black"),
+        axis.title.x = element_blank(),
+        axis.line = element_line(colour = "black", size = 0.5), 
+        axis.ticks = element_blank(),
+        panel.border =  element_rect(size = 0.5, colour = "black", fill = NA),
+        plot.margin = ggplot2::margin(12,6),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        panel.background = element_blank())
+ 
+```
